@@ -1,0 +1,264 @@
+import sqlite3
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+DB_NAME = "kidsafemap.db"
+
+class ProductApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("KidsafeMap - Контроль продуктов")
+        self.root.geometry("600x700")
+
+        self.db = sqlite3.connect(DB_NAME)
+        self.cr = self.db.cursor()
+        self.setup_database()
+
+        self.mode_var = tk.StringVar(value="white")
+        self.selected_products = []
+        self.all_products = []
+
+        self.setup_ui()
+        self.load_products()
+
+    def setup_database(self):
+        self.cr.execute("""
+            CREATE TABLE IF NOT EXISTS products(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                list_type TEXT NOT NULL CHECK(list_type IN ('white', 'black'))
+            )
+        """)
+        self.db.commit()
+
+        self.cr.execute("SELECT COUNT(*) FROM products")
+        if self.cr.fetchone()[0] == 0:
+            test_products = [
+                ("Яблоко", "white"),
+                ("Бананы", "white"),
+                ("Молоко", "white"),
+                ("Хлеб", "white"),
+                ("Кола", "black"),
+                ("Чипсы", "black"),
+                ("Шоколадный батончик", "black"),
+                ("Энергетический напиток", "black"),
+            ]
+            for name, list_type in test_products:
+                self.cr.execute(
+                    "INSERT OR IGNORE INTO products (name, list_type) VALUES (?, ?)",
+                    (name, list_type)
+                )
+            self.db.commit()
+
+    def setup_ui(self):
+        mode_frame = ttk.LabelFrame(self.root, text="Режим контроля", padding=10)
+        mode_frame.pack(fill="x", padx=10, pady=10)
+
+        ttk.Radiobutton(mode_frame, text="Белый список (разрешены только указанные)",
+                        variable=self.mode_var, value="white", command=self.on_mode_change).pack(anchor="w")
+        ttk.Radiobutton(mode_frame, text="Черный список (запрещены только указанные)",
+                        variable=self.mode_var, value="black", command=self.on_mode_change).pack(anchor="w")
+
+        products_frame = ttk.LabelFrame(self.root, text="Выбор продуктов", padding=10)
+        products_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.products_listbox = tk.Listbox(products_frame, selectmode=tk.MULTIPLE, height=15)
+        self.products_listbox.pack(side="left", fill="both", expand=True, padx=(0, 10))
+
+        scrollbar = ttk.Scrollbar(products_frame, orient="vertical", command=self.products_listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.products_listbox.config(yscrollcommand=scrollbar.set)
+
+        buttons_frame = ttk.Frame(self.root)
+        buttons_frame.pack(fill="x", padx=10, pady=10)
+
+        ttk.Button(buttons_frame, text="Добавить в корзину",
+                   command=self.add_to_cart).pack(side="left", padx=5)
+        ttk.Button(buttons_frame, text="Очистить корзину",
+                   command=self.clear_cart).pack(side="left", padx=5)
+        ttk.Button(buttons_frame, text="Оплатить",
+                   command=self.process_payment, style="Accent.TButton").pack(side="right", padx=5)
+        ttk.Button(buttons_frame, text="Добавить продукт",
+                   command=self.add_product_dialog).pack(side="right", padx=5)
+
+        cart_frame = ttk.LabelFrame(self.root, text="Корзина", padding=10)
+        cart_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        self.cart_text = tk.Text(cart_frame, height=8, state=tk.DISABLED)
+        self.cart_text.pack(fill="both", expand=True)
+
+        self.status_var = tk.StringVar(value="Готов к работе")
+        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN)
+        status_bar.pack(side="bottom", fill="x")
+
+        style = ttk.Style()
+        style.configure("Accent.TButton", foreground="white", background="#4CAF50")
+
+    def load_products(self):
+        self.products_listbox.delete(0, tk.END)
+        self.cr.execute("SELECT name, list_type FROM products ORDER BY name")
+        self.all_products = self.cr.fetchall()
+
+        for name, list_type in self.all_products:
+            color = "green" if list_type == "white" else "red"
+            self.products_listbox.insert(tk.END, name)
+            self.products_listbox.itemconfig(tk.END, {'fg': color})
+
+    def on_mode_change(self):
+        mode = self.mode_var.get()
+        mode_text = "белый список" if mode == "white" else "черный список"
+        self.status_var.set(f"Режим изменен на: {mode_text}")
+        self.load_products()
+
+    def add_to_cart(self):
+        selected_indices = self.products_listbox.curselection()
+        for idx in selected_indices:
+            product_name = self.all_products[idx][0]
+            if product_name not in self.selected_products:
+                self.selected_products.append(product_name)
+
+        self.update_cart_display()
+
+    def clear_cart(self):
+        self.selected_products.clear()
+        self.update_cart_display()
+
+    def update_cart_display(self):
+        self.cart_text.config(state=tk.NORMAL)
+        self.cart_text.delete(1.0, tk.END)
+
+        if not self.selected_products:
+            self.cart_text.insert(1.0, "Корзина пуста")
+        else:
+            for i, product in enumerate(self.selected_products, 1):
+                self.cart_text.insert(tk.END, f"{i}. {product}\n")
+
+        self.cart_text.config(state=tk.DISABLED)
+        self.status_var.set(f"В корзине: {len(self.selected_products)} товар(ов)")
+
+    def check_product(self, product_name: str, mode: str) -> bool:
+        self.cr.execute("SELECT list_type FROM products WHERE name = ?", (product_name,))
+        row = self.cr.fetchone()
+
+        if mode == "white":
+            return row is not None and row[0] == "white"
+        elif mode == "black":
+            if row is not None and row[0] == "black":
+                return False
+            return True
+
+    def process_payment(self):
+        if not self.selected_products:
+            messagebox.showwarning("Корзина пуста", "Добавьте товары в корзину перед оплатой")
+            return
+
+        mode = self.mode_var.get()
+        mode_text = "белый список" if mode == "white" else "черный список"
+
+        results = []
+        all_allowed = True
+
+        for product in self.selected_products:
+            allowed = self.check_product(product, mode)
+            status = "✓ Разрешено" if allowed else "✗ Запрещено"
+            results.append(f"{product}: {status}")
+            if not allowed:
+                all_allowed = False
+
+        result_window = tk.Toplevel(self.root)
+        result_window.title("Результат проверки")
+        result_window.geometry("600x600")
+
+        ttk.Label(result_window, text=f"Режим: {mode_text}\n",
+                  font=("Arial", 10, "bold")).pack(pady=10)
+
+        text_widget = tk.Text(result_window, height=12)
+        text_widget.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        for result in results:
+            if "✗ Запрещено" in result:
+                text_widget.insert(tk.END, result + "\n", "error")
+            else:
+                text_widget.insert(tk.END, result + "\n")
+
+        text_widget.tag_config("error", foreground="red")
+        text_widget.config(state=tk.DISABLED)
+
+        btn_frame = ttk.Frame(result_window)
+        btn_frame.pack(fill="x", padx=10, pady=10)
+
+        if all_allowed:
+            ttk.Button(btn_frame, text="Подтвердить оплату",
+                       command=lambda: self.finalize_payment(result_window),
+                       style="Accent.TButton").pack(side="right")
+            self.status_var.set("Все товары разрешены. Оплата возможна.")
+        else:
+            ttk.Label(btn_frame, text="Оплата отклонена!",
+                      foreground="red", font=("Arial", 10, "bold")).pack(side="left")
+            self.status_var.set("Обнаружены запрещенные товары. Оплата отклонена.")
+
+        ttk.Button(btn_frame, text="Закрыть",
+                   command=result_window.destroy).pack(side="right", padx=5)
+
+    def finalize_payment(self, window):
+        messagebox.showinfo("Оплата успешна", "Оплата прошла успешно!")
+        window.destroy()
+        self.clear_cart()
+        self.status_var.set("Оплата завершена успешно")
+
+    def add_product_dialog(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Добавить продукт")
+        dialog.geometry("500x300")
+        dialog.resizable(False, False)
+
+        ttk.Label(dialog, text="Название продукта:").pack(pady=10)
+        name_entry = ttk.Entry(dialog, width=30)
+        name_entry.pack(pady=5)
+        name_entry.focus()
+
+        ttk.Label(dialog, text="Тип списка:").pack(pady=10)
+        list_type_var = tk.StringVar(value="white")
+
+        ttk.Radiobutton(dialog, text="Белый список (разрешенный)",
+                        variable=list_type_var, value="white").pack()
+        ttk.Radiobutton(dialog, text="Черный список (запрещенный)",
+                        variable=list_type_var, value="black").pack()
+
+        def save_product():
+            name = name_entry.get().strip()
+            if not name:
+                messagebox.showerror("Ошибка", "Введите название продукта")
+                return
+
+            list_type = list_type_var.get()
+
+            try:
+                self.cr.execute(
+                    "INSERT OR REPLACE INTO products (name, list_type) VALUES (?, ?)",
+                    (name, list_type)
+                )
+                self.db.commit()
+                messagebox.showinfo("Успех", f"Продукт '{name}' добавлен в {list_type} список")
+                self.load_products()
+                dialog.destroy()
+            except sqlite3.Error as e:
+                messagebox.showerror("Ошибка БД", f"Ошибка при сохранении: {e}")
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=20)
+
+        ttk.Button(btn_frame, text="Сохранить", command=save_product).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Отмена", command=dialog.destroy).pack(side="left", padx=5)
+
+    def __del__(self):
+        if hasattr(self, 'db'):
+            self.db.close()
+
+def main():
+    root = tk.Tk()
+    app = ProductApp(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
